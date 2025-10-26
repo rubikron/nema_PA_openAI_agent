@@ -1,0 +1,16 @@
+# Core dependencies
+openai>=2.2
+openai-agents[voice]>=0.4.2
+python-dotenv>=1.0.0
+
+# Vector database
+pinecone-client
+
+# Voice processing
+sounddevice>=0.5.0
+numpy>=2.2.0
+websockets>=15.0
+
+# Additional utilities
+pydantic>=2.10
+requests>=2.0
