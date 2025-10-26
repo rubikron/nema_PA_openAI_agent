@@ -4,7 +4,7 @@ openai-agents[voice]>=0.4.2
 python-dotenv>=1.0.0
 
 # Vector database
-pinecone-client
+pinecone
 
 # Voice processing
 sounddevice>=0.5.0
@@ -14,3 +14,9 @@ websockets>=15.0
 # Additional utilities
 pydantic>=2.10
 requests>=2.0
+
+# Twilio integration
+twilio>=9.0.0
+fastapi>=0.100.0
+uvicorn>=0.30.0
+audioop-lts>=0.2.1
