@@ -5,9 +5,11 @@ A complete Twilio + OpenAI Realtime API integration for your AI business assista
 ## Features
 
 ✅ **Real-time voice conversation** - Continuous bidirectional audio streaming
+✅ **Auto-greeting** - Sophia introduces herself and the business automatically when call connects
+✅ **Dynamic business detection** - Automatically detects when Pinecone data changes to a new business
 ✅ **Natural turn-taking** - Server-side voice activity detection (VAD)
 ✅ **Can be interrupted** - Stop Sophia mid-sentence if needed
-✅ **Your existing agent** - Uses your knowledge base, tools, and business logic
+✅ **Preloaded context** - All business info loaded into context for instant responses
 ✅ **English only** - Configured to respond only in American English
 
 ## Quick Start
@@ -35,6 +37,9 @@ python twilio_realtime_server.py
 
 You should see:
 ```
+📚 Loading knowledge base...
+✅ Loaded XXXX characters of business information
+
 ============================================================
 🎙️  Twilio + OpenAI Realtime API Server
 ============================================================
@@ -44,7 +49,7 @@ Features:
   ✓ Continuous bidirectional audio streaming
   ✓ Turn detection (knows when you stop speaking)
   ✓ Can be interrupted
-  ✓ Uses your existing text agent for business queries
+  ✓ Preloaded business context for instant responses
 
 Starting server on http://0.0.0.0:8000
 ============================================================
@@ -74,6 +79,14 @@ Call your Twilio phone number and talk to Sophia! 📞
 ## How It Works
 
 ```
+┌─────────────────────────────────────────┐
+│  Server starts:                         │
+│  - Loads business info from Pinecone    │
+│  - Caches content hash for change       │
+│    detection                            │
+└──────┬──────────────────────────────────┘
+       │
+       ▼
 ┌─────────────┐
 │   You call  │
 │ Twilio #    │
@@ -81,15 +94,28 @@ Call your Twilio phone number and talk to Sophia! 📞
        │
        ▼
 ┌─────────────────────────────────────────┐
-│  Twilio plays greeting:                 │
-│  "Hi, this is Sophia, the business PA.  │
-│   How can I help you today?"            │
+│  Server checks for Pinecone updates:    │
+│  - Loads fresh content                  │
+│  - Compares hash to detect changes      │
+│  - Uses new data if business changed    │
 └──────┬──────────────────────────────────┘
        │
        ▼
 ┌─────────────────────────────────────────┐
 │  WebSocket connection established       │
 │  Twilio ↔ Your Server ↔ OpenAI         │
+│                                          │
+│  Session configured with business info  │
+│  in context                             │
+└──────┬──────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────────┐
+│  Auto-greeting triggered:               │
+│  - Server sends "Hi" on behalf of user  │
+│  - Sophia introduces herself:           │
+│    "Hi! I'm Sophia, a virtual assistant │
+│     representing [Business Name]..."    │
 └──────┬──────────────────────────────────┘
        │
        ▼
@@ -102,13 +128,23 @@ Call your Twilio phone number and talk to Sophia! 📞
 │  OpenAI processes:                       │
 │  - Transcribes your speech               │
 │  - Detects when you stop talking (VAD)  │
-│  - Generates response                    │
-│  - If needs business info: calls agent  │
+│  - Generates response INSTANTLY         │
+│    (all business info already in context)│
 │                                          │
 │  You hear ← Twilio ← Server ← OpenAI    │
 │  (PCM 24kHz → μ-law 8kHz conversion)    │
 └─────────────────────────────────────────┘
 ```
+
+### Why Preloaded Context?
+
+Instead of making retrieval calls during the conversation, all business information is loaded from Pinecone and injected into the AI's context. This means:
+
+- **Instant responses** - No pauses for "let me look that up"
+- **More natural conversation** - Flows like talking to a real person
+- **Lower latency** - No round-trips to the knowledge base
+- **Simpler architecture** - No function calling overhead
+- **Auto-updating** - Detects when Pinecone data changes between calls
 
 ## Architecture
 
@@ -121,9 +157,9 @@ Call your Twilio phone number and talk to Sophia! 📞
 
 ### Key Components
 
-1. **Twilio Media Streams** - Sends/receives audio over WebSocket (μ-law, 8kHz)
-2. **OpenAI Realtime API** - Handles STT, conversation, TTS (PCM16, 24kHz)
-3. **Your Text Agent** - Called via function calling for knowledge base queries
+1. **Pinecone Knowledge Base** - All business info loaded at startup into memory
+2. **Twilio Media Streams** - Sends/receives audio over WebSocket (μ-law, 8kHz)
+3. **OpenAI Realtime API** - Handles STT, conversation, TTS with preloaded context (PCM16, 24kHz)
 4. **Audio Conversion** - Bidirectional format conversion between Twilio and OpenAI
 
 ## Environment Variables
@@ -136,8 +172,10 @@ OPENAI_API_KEY=sk-...
 
 # Pinecone (for knowledge base)
 PINECONE_API_KEY=pcsk_...
-PINECONE_INDEX_NAME=business-assistant
-BUSINESS_ID=your-business-id
+PINECONE_INDEX_NAME=sophia-website-onboarding-test
+PINECONE_CLOUD=aws
+PINECONE_REGION=us-east-1
+PINECONE_HOST=https://your-index-host.pinecone.io
 
 # Twilio (optional - only needed for outbound calls)
 TWILIO_ACCOUNT_SID=AC...
@@ -170,24 +208,35 @@ Edit the voice setting in `twilio_realtime_server.py` (line ~96):
 
 ### Change the Greeting
 
-Edit the TwiML response in `twilio_realtime_server.py` (line ~50):
+The greeting is now **automatically generated** by the Realtime API. Sophia reads the business name from the Pinecone knowledge base and introduces herself dynamically.
+
+To customize the greeting format, edit the `FIRST GREETING` section in the instructions in `twilio_realtime_server.py`:
 
 ```python
-<Say>Hi, this is Sophia, the business PA. How can I help you today?</Say>
+FIRST GREETING (when caller says hi/hello):
+Always introduce yourself properly by saying: "Hi! I'm Sophia, a virtual assistant representing [BUSINESS NAME]..."
+```
+
+The greeting delay (to prevent audio cutoff) can be adjusted:
+
+```python
+await asyncio.sleep(1.5)  # Adjust delay before greeting
 ```
 
 ### Adjust Turn Detection
 
-Edit VAD settings in `twilio_realtime_server.py` (line ~104):
+Edit VAD settings in `twilio_realtime_server.py`:
 
 ```python
 "turn_detection": {
     "type": "server_vad",
-    "threshold": 0.5,           # How sensitive (0.0-1.0)
+    "threshold": 0.7,           # How sensitive (0.0-1.0), higher = less sensitive
     "prefix_padding_ms": 300,   # Include before speech starts
-    "silence_duration_ms": 500  # How long silence = end of turn
+    "silence_duration_ms": 700  # How long silence = end of turn
 }
 ```
+
+**Note:** The threshold is set to 0.7 (less sensitive) and silence duration to 700ms to prevent false triggers from background noise or echo after Sophia speaks.
 
 ## Troubleshooting
 
@@ -241,12 +290,27 @@ Response:
 ### View Logs
 
 Watch the server terminal for real-time logs:
+- 📚 Knowledge base loading (at startup and each call)
+- 🔄 Knowledge base changed (when new business detected)
+- 🎙️ Initial greeting triggered
 - 📞 Call events
 - 🎤 Speech detection
 - 📝 Transcriptions
 - 💬 Agent responses
-- 🔧 Function calls
 - ❌ Errors
+
+Example log for a call with updated business:
+```
+📞 Twilio WebSocket connection established
+📚 Checking knowledge base for updates...
+🔄 Knowledge base changed! Updating cached content...
+✅ Updated to 3500 characters of new business information
+🔌 Connecting to OpenAI Realtime API...
+✅ Connected to OpenAI Realtime API
+✅ OpenAI session configured
+🎙️ Triggered initial greeting
+💬 Agent: Hi! I'm Sophia, a virtual assistant representing...
+```
 
 ### ngrok Dashboard
 

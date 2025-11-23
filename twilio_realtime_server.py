@@ -7,8 +7,7 @@ import websockets
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import Response
-from agents import Runner, RunConfig
-from agent import business_customer_service_assistant
+from pinecone import Pinecone
 from twilio_audio_utils import (
     decode_mulaw_from_twilio,
     mulaw_to_pcm,
@@ -20,6 +19,37 @@ from twilio_audio_utils import (
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Initialize Pinecone
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index(
+    name=os.getenv("PINECONE_INDEX_NAME"),
+    host=os.getenv("PINECONE_HOST")
+)
+
+def load_knowledge_base():
+    """Load all content from Pinecone knowledge base."""
+    # Fetch all vectors (we know there are only 4)
+    # Use a zero vector to get all results
+    results = index.query(
+        vector=[0.0] * 1024,  # Zero vector to match all
+        top_k=10,  # Get all vectors
+        include_metadata=True
+    )
+
+    # Extract all text content
+    content_pieces = []
+    for match in results.matches:
+        if match.metadata and match.metadata.get("text"):
+            content_pieces.append(match.metadata["text"])
+
+    return "\n\n---\n\n".join(content_pieces)
+
+# Load initial knowledge base content and store hash for change detection
+print("📚 Loading initial knowledge base...")
+_cached_knowledge_base = load_knowledge_base()
+_cached_content_hash = hash(_cached_knowledge_base)
+print(f"✅ Loaded {len(_cached_knowledge_base)} characters of business information")
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
 
 app = FastAPI()
@@ -35,7 +65,6 @@ async def voice_webhook(request: Request):
 
     twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Hi, this is Sophia, the business PA. How can I help you today?</Say>
     <Connect>
         <Stream url="{ws_url}" />
     </Connect>
@@ -58,6 +87,23 @@ async def media_stream_handler(websocket: WebSocket):
     openai_ws = None
 
     try:
+        # Check for knowledge base updates
+        global _cached_knowledge_base, _cached_content_hash
+
+        print("📚 Checking knowledge base for updates...")
+        fresh_content = load_knowledge_base()
+        fresh_hash = hash(fresh_content)
+
+        if fresh_hash != _cached_content_hash:
+            print("🔄 Knowledge base changed! Updating cached content...")
+            _cached_knowledge_base = fresh_content
+            _cached_content_hash = fresh_hash
+            print(f"✅ Updated to {len(fresh_content)} characters of new business information")
+        else:
+            print("✅ Knowledge base unchanged, using cached content")
+
+        knowledge_base_content = _cached_knowledge_base
+
         # Connect to OpenAI Realtime API
         print("🔌 Connecting to OpenAI Realtime API...")
         openai_ws = await websockets.connect(
@@ -69,12 +115,16 @@ async def media_stream_handler(websocket: WebSocket):
         )
         print("✅ Connected to OpenAI Realtime API")
 
-        # Configure the session
+        # Configure the session with preloaded knowledge base
         session_config = {
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": """You are Sophia, a friendly business PA.
+                "instructions": f"""You are Sophia, a friendly virtual business assistant.
+
+FIRST GREETING (when caller says hi/hello):
+Always introduce yourself properly by saying: "Hi! I'm Sophia, a virtual assistant representing [BUSINESS NAME from the information below]. How can I help you today?"
+Use the actual business name from the BUSINESS INFORMATION section.
 
 CRITICAL RULES:
 - Respond ONLY in American English
@@ -83,13 +133,17 @@ CRITICAL RULES:
 - Stop talking after answering to let the customer respond
 - Be conversational and helpful
 
-When the user asks about business information (products, services, pricing):
-- Tell them you'll look that up
-- Use the get_business_info function
-- Answer based on the results
+You have all the business information you need below. Answer questions directly from this knowledge - no need to look anything up!
 
-For greetings and general chat:
-- Just respond naturally without searching""",
+=== BUSINESS INFORMATION ===
+{knowledge_base_content}
+=== END BUSINESS INFORMATION ===
+
+When answering questions:
+- Use the information above to answer about products, services, pricing, contact info
+- Be specific with prices and details when available
+- For greetings and general chat, just respond naturally
+- If something isn't in the information above, say you don't have that specific info and offer to help with something else""",
                 "voice": "alloy",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
@@ -98,32 +152,37 @@ For greetings and general chat:
                 },
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.5,
+                    "threshold": 0.7,
                     "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
-                },
-                "tools": [
-                    {
-                        "type": "function",
-                        "name": "get_business_info",
-                        "description": "Search the knowledge base for business information",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "What to search for in the knowledge base"
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    }
-                ],
-                "tool_choice": "auto"
+                    "silence_duration_ms": 700
+                }
             }
         }
         await openai_ws.send(json.dumps(session_config))
         print("✅ OpenAI session configured")
+
+        # Wait for Twilio media stream to fully establish before greeting
+        await asyncio.sleep(1.5)
+
+        # Send initial greeting - simulate a user saying "hi" to trigger Sophia's introduction
+        initial_message = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Hi"
+                    }
+                ]
+            }
+        }
+        await openai_ws.send(json.dumps(initial_message))
+
+        # Trigger the response so Sophia greets the caller
+        await openai_ws.send(json.dumps({"type": "response.create"}))
+        print("🎙️ Triggered initial greeting")
 
         # Create tasks for bidirectional streaming
         async def twilio_to_openai():
@@ -229,36 +288,6 @@ For greetings and general chat:
                 elif event_type == "response.audio_transcript.done":
                     print()  # New line after transcript
 
-                elif event_type == "response.function_call_arguments.done":
-                    # Function call requested
-                    call_id = event.get("call_id")
-                    name = event.get("name")
-                    arguments = event.get("arguments")
-
-                    print(f"🔧 Function call: {name}({arguments})")
-
-                    # Execute the function (call our text agent)
-                    if name == "get_business_info":
-                        args = json.loads(arguments)
-                        query = args.get("query", "")
-
-                        # Use our existing agent to search
-                        result = await call_text_agent(query)
-
-                        # Send result back to OpenAI
-                        function_response = {
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "function_call_output",
-                                "call_id": call_id,
-                                "output": json.dumps({"result": result})
-                            }
-                        }
-                        await openai_ws.send(json.dumps(function_response))
-
-                        # Trigger response generation
-                        await openai_ws.send(json.dumps({"type": "response.create"}))
-
                 elif event_type == "error":
                     error = event.get("error", {})
                     print(f"❌ OpenAI error: {error}")
@@ -281,47 +310,6 @@ For greetings and general chat:
         print("📞 WebSocket closed")
 
 
-async def call_text_agent(query: str) -> str:
-    """
-    Call the existing text-based agent to handle business queries.
-
-    Args:
-        query: The user's question
-
-    Returns:
-        The agent's response
-    """
-    try:
-        print(f"🔍 Searching knowledge base for: {query}")
-
-        # Run the agent
-        result = await Runner.run(
-            business_customer_service_assistant,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": query
-                        }
-                    ]
-                }
-            ],
-            run_config=RunConfig()
-        )
-
-        # Extract the text response
-        response_text = result.final_output_as(str)
-        print(f"✅ Agent response: {response_text}")
-
-        return response_text
-
-    except Exception as e:
-        print(f"❌ Error calling text agent: {str(e)}")
-        return "I'm having trouble accessing that information right now. Let me get someone to help you."
-
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -342,4 +330,4 @@ if __name__ == "__main__":
     print("\nStarting server on http://0.0.0.0:8000")
     print("=" * 60 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8002)
