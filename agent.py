@@ -11,28 +11,31 @@ load_dotenv()
 
 # Initialize Pinecone
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
+index = pc.Index(
+    name=os.getenv("PINECONE_INDEX_NAME"),
+    host=os.getenv("PINECONE_HOST")
+)
 
 # Initialize OpenAI for embeddings
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Tool definitions
 @function_tool
-def search_knowledge_base(query: str, business_id: str = os.getenv("BUSINESS_ID")):
+def search_knowledge_base(query: str):
   """Search the knowledge base for relevant information about the business."""
   # Generate embedding for the query
   embedding_response = openai_client.embeddings.create(
     input=query,
-    model="text-embedding-3-small"
+    model="text-embedding-3-small",
+    dimensions=1024
   )
   query_embedding = embedding_response.data[0].embedding
 
-  # Query Pinecone with the embedding and business_id filter
+  # Query Pinecone with the embedding
   results = index.query(
     vector=query_embedding,
     top_k=3,
-    include_metadata=True,
-    filter={"business_id": business_id}
+    include_metadata=True
   )
 
   # Extract and format the results
@@ -125,7 +128,7 @@ async def run_workflow(workflow_input: WorkflowInput):
       ],
       run_config=RunConfig(trace_metadata={
         "__trace_source__": "agent-builder",
-        "workflow_id": "wf_68fdd3ee055c8190ac9ecd6854f91e2209e5696fc3b96d1d"
+        "workflow_id": "wf_68fe7ff927208190bc37e4eed48d827a0af5e9ea9b27fe55"
       })
     )
 
