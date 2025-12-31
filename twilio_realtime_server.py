@@ -50,7 +50,7 @@ print("📚 Loading initial knowledge base...")
 _cached_knowledge_base = load_knowledge_base()
 _cached_content_hash = hash(_cached_knowledge_base)
 print(f"✅ Loaded {len(_cached_knowledge_base)} characters of business information")
-OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
+OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
 
 app = FastAPI()
 active_calls = {}
@@ -248,9 +248,20 @@ When answering questions:
                 elif event_type == "input_audio_buffer.speech_stopped":
                     print("🎤 User stopped speaking")
 
+                elif event_type == "input_audio_buffer.committed":
+                    # Trigger response when audio buffer is committed
+                    print("[DEBUG] Audio committed, triggering response...")
+                    await openai_ws.send(json.dumps({"type": "response.create"}))
+
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     transcript = event.get("transcript", "")
                     print(f"📝 User said: {transcript}")
+
+                elif event_type == "response.created":
+                    print("🔄 Response started")
+
+                elif event_type == "response.done":
+                    print(f"✅ Response done: {json.dumps(event, indent=2)}")
 
                 elif event_type == "response.audio.delta":
                     # Audio chunk from OpenAI
