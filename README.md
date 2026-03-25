@@ -1,4 +1,4 @@
-# Sophia AI Assistant - Voice-Enabled Customer Service Agent
+# Nema AI Assistant - Voice-Enabled Customer Service Agent
 
 A voice-enabled AI customer service agent that can retrieve information from your knowledge base (stored in Pinecone) and interact via text or voice.
 
